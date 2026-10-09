@@ -245,9 +245,11 @@ export function readCatalogMeta(dataDir) {
 const NON_CHAT_MODEL_IDS = new Set(["jev-1.13-free", "exo-free"]);
 
 function humanizeModelId(id) {
-  const tail = String(id).split("/").pop() ?? String(id);
+  const parts = String(id).split("/");
+  const prefix = parts.length > 1 ? parts[0] + " · " : "";
+  const tail = parts.pop() ?? String(id);
   const spaced = tail.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return spaced.replace(/\s*Free\b/, " (free)").trim();
+  return (prefix + spaced.replace(/\s*Free\b/, " (free)")).trim();
 }
 
 function toPiModel(entry, meta) {
@@ -271,13 +273,15 @@ function toPiModel(entry, meta) {
   };
 }
 
-async function discoverModelsWhenReady(service, logger, { attempts = 12, delayMs = 1500 } = {}) {
+async function discoverModelsWhenReady(service, logger, { attempts = 15, delayMs = 1000 } = {}) {
   let best;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const found = await discoverModels(service, 20000);
     if (found && found.length > 0) {
       best = found;
-      if (found.length >= FALLBACK_MODELS.length || attempt >= 2) return found;
+      // 当渠道模型加载完成时通常 > 100 个；如果已经抓到 100 个以上，立刻返回
+      if (found.length > 100) return found;
+      // 如果只有初始的几个，等待更多渠道加载
     }
     if (attempt < attempts - 1) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -364,6 +368,33 @@ export default function registerOurFreeModel(pi) {
         logger.info?.(
           `pi-our-free-model: ${config.models.length} free model(s) available via ${config.baseUrl}`,
         );
+
+        // 如果首次加载只有匿名池 (< 50)，在后台异步等待渠道加载完毕后热更新注册
+        if (config.models.length < 50) {
+          setTimeout(async () => {
+            try {
+              const fullDiscovered = await discoverModels(service, 20000);
+              if (fullDiscovered && fullDiscovered.length > config.models.length) {
+                const meta = readCatalogMeta(service.dataDir);
+                const byId = new Map();
+                for (const entry of fullDiscovered) {
+                  if (NON_CHAT_MODEL_IDS.has(entry.id)) continue;
+                  const m = toPiModel(entry, meta);
+                  byId.set(m.id, m);
+                }
+                const updatedConfig = {
+                  ...config,
+                  models: [...byId.values()],
+                };
+                pi.registerProvider(PROVIDER_ID, updatedConfig);
+                logger.info?.(
+                  `pi-our-free-model: 后台自动刷新成功，挂载了全部 ${updatedConfig.models.length} 个模型！`,
+                );
+              }
+            } catch {}
+          }, 8000).unref?.();
+        }
+
         return { service, config };
       })();
     }
@@ -371,7 +402,7 @@ export default function registerOurFreeModel(pi) {
   };
 
   pi.registerCommand("free-models", {
-    description: "管理 Our Free Model (free-models [open|update|status])",
+    description: "管理 Our Free Model (free-models [open|refresh|update])",
     handler: async (args, ctx) => {
       const sub = (args || "").trim().toLowerCase();
       try {
@@ -379,12 +410,31 @@ export default function registerOurFreeModel(pi) {
         const { service, config } = state;
 
         if (sub === "open" || sub === "ui" || sub === "login") {
-          // 打开原作者管理后台
           openBrowser(service.url);
           copyToClipboard(service.key);
           ctx.ui?.notify?.(
-            `已在浏览器打开管理面板: ${service.url}。\nAPI Key 已复制到剪贴板，如提示登录直接 Ctrl+V 粘贴即可！`
+            `已在浏览器打开管理面板: ${service.url}。\nAPI Key 已自动复制到剪贴板，如提示登录直接 Ctrl+V 粘贴即可！`
           );
+          return;
+        }
+
+        if (sub === "refresh" || sub === "reload") {
+          ctx.ui?.notify?.("正在刷新网关最新模型清单...");
+          const latest = await discoverModels(service, 25000);
+          if (latest && latest.length > 0) {
+            const meta = readCatalogMeta(service.dataDir);
+            const byId = new Map();
+            for (const entry of latest) {
+              if (NON_CHAT_MODEL_IDS.has(entry.id)) continue;
+              const m = toPiModel(entry, meta);
+              byId.set(m.id, m);
+            }
+            const updatedConfig = { ...config, models: [...byId.values()] };
+            pi.registerProvider(PROVIDER_ID, updatedConfig);
+            ctx.ui?.notify?.(`刷新成功！当前已加载 ${updatedConfig.models.length} 个模型。`);
+          } else {
+            ctx.ui?.notify?.("未能获取到最新模型清单，请检查网关状态。");
+          }
           return;
         }
 
@@ -395,19 +445,19 @@ export default function registerOurFreeModel(pi) {
             ctx.ui?.notify?.(update.error);
           } else if (update.isNewer) {
             ctx.ui?.notify?.(
-              `发现原作者有新更新！\n最新提交: [${update.latestSha}] ${update.message}\n提交时间: ${update.commitDate}\n更新包: pi update npm:pi-our-free-model`
+              `发现原作者有新更新！\n最新提交: [${update.latestSha}] ${update.message}\n提交时间: ${update.commitDate}\n更新命令: pi update npm:pi-our-free-model`
             );
           } else {
-            ctx.ui?.notify?.(`已是最新！当前基准提交为: [${update.currentSha}]`);
+            ctx.ui?.notify?.(`已是最新！当前基准提交: [${update.currentSha}]`);
           }
           return;
         }
 
-        // 默认显示状态
         ctx.ui?.notify?.(
           `Our Free Model: 已就绪 ${config.models.length} 个模型。\n` +
           `本地网关: ${service.url}\n` +
           `• 输入 /free-models open 可一键在浏览器打开毛玻璃账号管理后台\n` +
+          `• 输入 /free-models refresh 可强制刷新最新 600+ 模型\n` +
           `• 输入 /free-models update 可检查原作者最新上游更新`
         );
       } catch (error) {
