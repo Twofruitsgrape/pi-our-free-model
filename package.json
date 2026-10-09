@@ -32,7 +32,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Ebony-Vinyl/dsh-our-free-model.git"
+    "url": "git+https://github.com/Twofruitsgrape/pi-our-free-model.git"
   },
-  "homepage": "https://github.com/Ebony-Vinyl/dsh-our-free-model"
+  "homepage": "https://github.com/Twofruitsgrape/pi-our-free-model",
+  "bugs": {
+    "url": "https://github.com/Twofruitsgrape/pi-our-free-model/issues"
+  }
 }
