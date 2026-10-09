@@ -244,22 +244,60 @@ export function readCatalogMeta(dataDir) {
 
 const NON_CHAT_MODEL_IDS = new Set(["jev-1.13-free", "exo-free"]);
 
-function humanizeModelId(id) {
-  const parts = String(id).split("/");
-  const prefix = parts.length > 1 ? parts[0] + " · " : "";
-  const tail = parts.pop() ?? String(id);
-  const spaced = tail.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return (prefix + spaced.replace(/\s*Free\b/, " (free)")).trim();
+function formatModelDisplayName(entry, meta) {
+  const id = entry.id;
+  const rawName = (entry.name && entry.name.trim()) ? entry.name.trim() : "";
+  const info = meta?.get ? (meta.get(entry.id) || meta.get(id)) : null;
+  const parts = id.split('/');
+  const channel = parts.length > 1 ? parts[0] : "free";
+  const subName = parts.length > 1 ? parts.slice(1).join('/') : id;
+
+  const channelMap = {
+    'workbuddy': 'WorkBuddy',
+    'buddy': 'CodeBuddy',
+    'lobsterai': 'LobsterAI',
+    'qoder': 'Qoder',
+    'qodercn': 'Qoder国内',
+    'codearts': 'CodeArts',
+    'cline': 'Cline',
+    'loomy': 'Loomy',
+    'raccoon': 'Raccoon',
+    'minimax': 'MiniMax',
+    'zcode': 'ZCode',
+    'gemini': 'Gemini',
+    'free': '公共免费'
+  };
+  const channelLabel = channelMap[channel.toLowerCase()] || channel;
+
+  let tag = "";
+  if (id.endsWith('-free') || id.includes('/free') || rawName.includes('免费') || rawName.includes('x0.00')) {
+    tag = "免费";
+  } else {
+    const match = rawName.match(/x\d+(\.\d+)?/i);
+    if (match) tag = match[0];
+  }
+
+  let cleanName = (info?.name || rawName).replace(/·\s*(x\d+(\.\d+)?|免费|x0\.00→免费).*$/i, '').trim();
+  if (!cleanName || cleanName === subName) {
+    cleanName = subName
+      .split('/')
+      .pop()
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase())
+      .replace(/\s*Free\b/i, '');
+  }
+
+  return tag ? `[${channelLabel}] ${cleanName} · ${tag}` : `[${channelLabel}] ${cleanName}`;
 }
 
 function toPiModel(entry, meta) {
   const id = normalizeModelId(entry.id);
-  const info = meta.get(entry.id) ?? meta.get(id);
+  const info = meta?.get ? (meta.get(entry.id) ?? meta.get(id)) : null;
   const contextWindow = info?.contextWindow ?? entry.contextWindow ?? 128000;
   const maxTokens = Math.min(info?.maxOutput ?? 32000, contextWindow);
   return {
     id,
-    name: info?.name ?? humanizeModelId(id),
+    name: formatModelDisplayName(entry, meta),
     reasoning: info?.reasoning !== false,
     input: info?.vision ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -471,3 +509,4 @@ export default function registerOurFreeModel(pi) {
     return null;
   });
 }
+
