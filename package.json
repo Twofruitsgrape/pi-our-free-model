@@ -1,6 +1,6 @@
 {
   "name": "pi-our-free-model",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Free frontier models (DeepSeek V4.1 Flash, Kimi K3, GLM-5.3, ...) for the pi coding agent via a self-contained local OpenAI-compatible gateway. Ported from Ebony-Vinyl/dsh-our-free-model.",
   "type": "module",
   "license": "MIT",

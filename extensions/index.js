@@ -4,18 +4,11 @@
  * Ported from Ebony-Vinyl/dsh-our-free-model (MIT).
  * Original project: https://github.com/Ebony-Vinyl/dsh-our-free-model
  *
- * The original project is a DeepSeek Harness plugin. This package reuses its
- * "standalone" local service - a self-contained OpenAI-compatible gateway - and
- * registers it as a pi provider. DeepSeek Harness, Cordis, a DSH profile and
- * DSH credentials are NOT required: the gateway runs as a detached local
- * process, binds loopback only, and keeps its own data directory.
- *
- * The gateway runs out-of-process on purpose. Its channel runtime uses a worker
- * thread plus an HTTP listener, either of which would pin pi's event loop and
- * stop one-shot runs (`pi -p ...`) from ever exiting.
+ * This extension manages the standalone local service (OpenAI-compatible gateway)
+ * and registers it as a pi provider. DeepSeek Harness (DSH) is NOT required.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, exec } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -27,6 +20,8 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const CLI_ENTRY = path.join(PACKAGE_ROOT, "vendor", "packages", "standalone", "cli.mjs");
 
 const PROVIDER_ID = "our-free-model";
+const UPSTREAM_REPO = "Ebony-Vinyl/dsh-our-free-model";
+const CURRENT_UPSTREAM_COMMIT = "befe36559e9f642ddac279e8b275558367f9f085";
 
 /** Static fallback catalog, used when live discovery is unavailable. */
 const FALLBACK_MODELS = [
@@ -48,11 +43,6 @@ export function resolveDataDir() {
   return path.join(os.homedir(), ".our-free-model");
 }
 
-/**
- * Strip a possibly host-prefixed model id down to what the gateway expects.
- * The gateway resolves "provider/model"; a leading "our-free-model/" prefix is
- * not part of its own ids.
- */
 export function normalizeModelId(id) {
   const raw = String(id ?? "").trim();
   if (!raw) return raw;
@@ -73,11 +63,6 @@ function readSettings(dataDir) {
   }
 }
 
-/**
- * The upstream service takes an exclusive lock file and never clears it after an
- * unclean exit, which would block every later start. Since pi starts and stops
- * often, recover from a lock whose owning process is gone.
- */
 export function clearStaleLock(dataDir, logger) {
   const lockFile = path.join(dataDir, "service.lock");
   if (!fs.existsSync(lockFile)) return false;
@@ -87,14 +72,14 @@ export function clearStaleLock(dataDir, logger) {
     const pid = parsed?.pid;
     if (typeof pid === "number" && pid > 0) {
       try {
-        process.kill(pid, 0); // signal 0 only probes for existence
+        process.kill(pid, 0);
         ownerAlive = pid !== process.pid;
       } catch {
         ownerAlive = false;
       }
     }
   } catch {
-    ownerAlive = false; // an unreadable lock counts as stale
+    ownerAlive = false;
   }
   if (ownerAlive) return false;
   try {
@@ -106,7 +91,6 @@ export function clearStaleLock(dataDir, logger) {
   }
 }
 
-/** Probe a loopback port for the gateway's /health endpoint. */
 async function probeHealth(url, timeoutMs = 1500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -122,7 +106,6 @@ async function probeHealth(url, timeoutMs = 1500) {
   }
 }
 
-/** Find a free loopback port. */
 function findFreePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -134,16 +117,10 @@ function findFreePort() {
   });
 }
 
-/**
- * Wait until the gateway answers /health, or the child dies.
- * Resolves true when healthy, false on timeout.
- */
 async function waitForHealth(url, child, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let exited = false;
-  child.once("exit", () => {
-    exited = true;
-  });
+  child.once("exit", () => { exited = true; });
   while (Date.now() < deadline) {
     if (exited) return false;
     if (await probeHealth(url)) return true;
@@ -152,16 +129,6 @@ async function waitForHealth(url, child, timeoutMs) {
   return false;
 }
 
-/**
- * Ensure a gateway is running and return its connection details.
- *
- * Idempotent within a process: repeated calls share one promise. It first tries
- * to adopt an already-running gateway (so a second pi process, or a manually
- * started service, is reused rather than duplicated), then spawns a detached
- * child. The child is intentionally NOT killed when pi exits: it is a shared
- * local service, it is cheap while idle, and leaving it up makes the next pi
- * start instant. Use the /free-models command for status.
- */
 let servicePromise = null;
 export async function ensureService(logger) {
   if (servicePromise) return servicePromise;
@@ -173,23 +140,19 @@ export async function ensureService(logger) {
     const key = settings?.forwardKey;
     const savedPort = settings?.standalonePort;
 
-    // 1. Adopt an existing gateway when the saved port is live.
     if (typeof key === "string" && key !== "" && Number.isInteger(savedPort) && savedPort > 0) {
       const existingUrl = "http://127.0.0.1:" + savedPort;
       if (await probeHealth(existingUrl)) {
-        return { url: existingUrl, key, dataDir, spawned: false };
+        return { url: existingUrl, key, dataDir, spawned: false, port: savedPort };
       }
     }
 
     if (!fs.existsSync(CLI_ENTRY)) {
       throw new Error(
-        "pi-our-free-model: bundled service not found at " +
-          CLI_ENTRY +
-          ". Reinstall the package (vendor/ must ship with it).",
+        "pi-our-free-model: bundled service not found at " + CLI_ENTRY + ". Reinstall the package."
       );
     }
 
-    // 2. Spawn the gateway as a detached child on a known free port.
     const port = await findFreePort();
     const url = "http://127.0.0.1:" + port;
 
@@ -207,14 +170,9 @@ export async function ensureService(logger) {
 
     let healthy = await waitForHealth(url, child, 45000);
 
-    // 3. One recovery attempt for the known stale-lock failure.
     if (!healthy) {
       if (clearStaleLock(dataDir, logger)) {
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
+        try { child.kill(); } catch {}
         child = spawnOnce();
         child.unref();
         healthy = await waitForHealth(url, child, 45000);
@@ -223,27 +181,21 @@ export async function ensureService(logger) {
 
     if (!healthy) {
       throw new Error(
-        "pi-our-free-model: the local gateway did not become healthy on " +
-          url +
-          ". Check that port " +
-          port +
-          " is free and retry.",
+        "pi-our-free-model: the local gateway did not become healthy on " + url
       );
     }
 
     const finalKey = readSettings(dataDir)?.forwardKey ?? key;
-    if (!finalKey) {
-      throw new Error("pi-our-free-model: could not determine the gateway API key");
-    }
-    return { url, key: finalKey, dataDir, spawned: true };
+    if (!finalKey) throw new Error("pi-our-free-model: could not determine the gateway API key");
+
+    return { url, key: finalKey, dataDir, spawned: true, port };
   })().catch((error) => {
-    servicePromise = null; // allow a later retry
+    servicePromise = null;
     throw error;
   });
   return servicePromise;
 }
 
-/** Ask the running gateway which models it currently offers. */
 async function discoverModels(service, timeoutMs = 20000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -269,10 +221,6 @@ async function discoverModels(service, timeoutMs = 20000) {
   }
 }
 
-/**
- * The gateway's catalog carries richer per-model metadata (context window,
- * output limit, reasoning, vision) than /v1/models. Merge it in when available.
- */
 export function readCatalogMeta(dataDir) {
   const meta = new Map();
   try {
@@ -290,13 +238,10 @@ export function readCatalogMeta(dataDir) {
         vision: row.vision === true,
       });
     }
-  } catch {
-    /* metadata is optional */
-  }
+  } catch {}
   return meta;
 }
 
-/** Models the gateway lists but cannot serve as chat (classifiers, retired ids). */
 const NON_CHAT_MODEL_IDS = new Set(["jev-1.13-free", "exo-free"]);
 
 function humanizeModelId(id) {
@@ -305,7 +250,6 @@ function humanizeModelId(id) {
   return spaced.replace(/\s*Free\b/, " (free)").trim();
 }
 
-/** Turn a discovered gateway model into a pi model descriptor. */
 function toPiModel(entry, meta) {
   const id = normalizeModelId(entry.id);
   const info = meta.get(entry.id) ?? meta.get(id);
@@ -320,44 +264,32 @@ function toPiModel(entry, meta) {
     contextWindow,
     maxTokens: maxTokens > 0 ? maxTokens : 32000,
     compat: {
-      // The gateway rejects OpenAI's "developer" role and expects max_tokens.
       supportsDeveloperRole: false,
+      supportsFinishReason: false,
       maxTokensField: "max_tokens",
     },
   };
 }
 
-/**
- * On a brand-new data directory the gateway has no catalog yet and reports an
- * empty (or nearly empty) model list for the first few seconds. Registering only
- * that would make pi warn "model not found" and fall back to a raw model id on a
- * fresh install. Poll until the roster is populated, bounded by a deadline.
- */
-async function discoverModelsWhenReady(service, logger, { attempts = 12, delayMs = 2000 } = {}) {
+async function discoverModelsWhenReady(service, logger, { attempts = 12, delayMs = 1500 } = {}) {
   let best;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const found = await discoverModels(service, 20000);
     if (found && found.length > 0) {
       best = found;
-      // A cold catalog first returns just the anonymous set; wait one more beat
-      // for the channel roster to settle, then accept whatever we have.
-      if (found.length >= FALLBACK_MODELS.length || attempt >= 3) return found;
+      if (found.length >= FALLBACK_MODELS.length || attempt >= 2) return found;
     }
     if (attempt < attempts - 1) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
-  if (best) return best;
-  return undefined;
+  return best;
 }
 
-/** Build the pi provider config from a resolved service. */
 export async function buildProviderConfig(service, logger) {
   const discovered = await discoverModelsWhenReady(service, logger);
   const meta = readCatalogMeta(service.dataDir);
 
-  // Always include the bundled catalog as a floor, then layer the live roster on
-  // top. This keeps a fresh install usable even if discovery is slow or partial.
   const byId = new Map();
   for (const m of FALLBACK_MODELS) {
     byId.set(m.id, toPiModel({ id: m.id, contextWindow: m.contextWindow }, meta));
@@ -368,19 +300,51 @@ export async function buildProviderConfig(service, logger) {
       const model = toPiModel(entry, meta);
       byId.set(model.id, model);
     }
-  } else {
-    logger?.warn?.(
-      "pi-our-free-model: live model discovery returned nothing; using the bundled catalog. " +
-        "The gateway may still be starting up.",
-    );
   }
-
   return {
     baseUrl: service.url + "/v1",
     apiKey: service.key,
     api: "openai-completions",
     models: [...byId.values()],
   };
+}
+
+/** Open URL in user's default browser (cross-platform). */
+function openBrowser(url) {
+  const start = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+  exec(`${start} "${url}"`);
+}
+
+/** Copy text to clipboard on Windows / macOS / Linux. */
+function copyToClipboard(text) {
+  if (process.platform === "win32") {
+    const proc = spawn("powershell", ["-NoProfile", "-Command", "$input | Set-Clipboard"], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    proc.stdin.write(text);
+    proc.stdin.end();
+  }
+}
+
+/** Check upstream repository for new commits or releases. */
+async function checkUpstreamUpdate() {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${UPSTREAM_REPO}/commits/main`, {
+      headers: { "User-Agent": "pi-our-free-model" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { error: `GitHub API 返回错误: ${res.status}` };
+    const data = await res.json();
+    const latestSha = data.sha;
+    const isNewer = latestSha !== CURRENT_UPSTREAM_COMMIT;
+    return {
+      isNewer,
+      latestSha: latestSha.slice(0, 8),
+      currentSha: CURRENT_UPSTREAM_COMMIT.slice(0, 8),
+      commitDate: data.commit?.author?.date,
+      message: (data.commit?.message || "").split("\n")[0],
+    };
+  } catch (e) {
+    return { error: `检查更新超时或失败: ${e.message}` };
+  }
 }
 
 export default function registerOurFreeModel(pi) {
@@ -398,11 +362,7 @@ export default function registerOurFreeModel(pi) {
         const config = await buildProviderConfig(service, logger);
         pi.registerProvider(PROVIDER_ID, config);
         logger.info?.(
-          "pi-our-free-model: " +
-            config.models.length +
-            " free model(s) via " +
-            config.baseUrl +
-            (service.spawned ? " (gateway started)" : " (gateway reused)"),
+          `pi-our-free-model: ${config.models.length} free model(s) available via ${config.baseUrl}`,
         );
         return { service, config };
       })();
@@ -411,40 +371,51 @@ export default function registerOurFreeModel(pi) {
   };
 
   pi.registerCommand("free-models", {
-    description: "Show the status of the Our Free Model gateway (free frontier models)",
-    handler: async (_args, ctx) => {
+    description: "管理 Our Free Model (free-models [open|update|status])",
+    handler: async (args, ctx) => {
+      const sub = (args || "").trim().toLowerCase();
       try {
         const state = await boot();
-        const service = state.service;
-        const config = state.config;
+        const { service, config } = state;
+
+        if (sub === "open" || sub === "ui" || sub === "login") {
+          // 打开原作者管理后台
+          openBrowser(service.url);
+          copyToClipboard(service.key);
+          ctx.ui?.notify?.(
+            `已在浏览器打开管理面板: ${service.url}。\nAPI Key 已复制到剪贴板，如提示登录直接 Ctrl+V 粘贴即可！`
+          );
+          return;
+        }
+
+        if (sub === "update" || sub === "check") {
+          ctx.ui?.notify?.("正在检测原作者 GitHub 最新版本...");
+          const update = await checkUpstreamUpdate();
+          if (update.error) {
+            ctx.ui?.notify?.(update.error);
+          } else if (update.isNewer) {
+            ctx.ui?.notify?.(
+              `发现原作者有新更新！\n最新提交: [${update.latestSha}] ${update.message}\n提交时间: ${update.commitDate}\n更新包: pi update npm:pi-our-free-model`
+            );
+          } else {
+            ctx.ui?.notify?.(`已是最新！当前基准提交为: [${update.currentSha}]`);
+          }
+          return;
+        }
+
+        // 默认显示状态
         ctx.ui?.notify?.(
-          "Our Free Model: " +
-            config.models.length +
-            " model(s) at " +
-            service.url +
-            " (data: " +
-            service.dataDir +
-            ")",
-        );
-        logger.info?.(
-          "Our Free Model gateway: " +
-            service.url +
-            (service.spawned ? " (started by this session)" : " (already running)") +
-            "\n  data dir : " +
-            service.dataDir +
-            "\n  models   : " +
-            config.models.length +
-            "\n" +
-            config.models.map((m) => "    - " + m.id).join("\n"),
+          `Our Free Model: 已就绪 ${config.models.length} 个模型。\n` +
+          `本地网关: ${service.url}\n` +
+          `• 输入 /free-models open 可一键在浏览器打开毛玻璃账号管理后台\n` +
+          `• 输入 /free-models update 可检查原作者最新上游更新`
         );
       } catch (error) {
-        ctx.ui?.notify?.("Our Free Model is unavailable: " + (error?.message ?? error));
+        ctx.ui?.notify?.("Our Free Model 状态不可用: " + (error?.message ?? error));
       }
     },
   });
 
-  // Start the gateway now so its models are available to startup model
-  // selection (pi awaits async extension factories before continuing).
   return boot().catch((error) => {
     logger.warn?.("pi-our-free-model: could not start the gateway: " + (error?.message ?? error));
     return null;
