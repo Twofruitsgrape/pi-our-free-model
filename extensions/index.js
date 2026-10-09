@@ -327,24 +327,59 @@ function toPiModel(entry, meta) {
   };
 }
 
+/**
+ * On a brand-new data directory the gateway has no catalog yet and reports an
+ * empty (or nearly empty) model list for the first few seconds. Registering only
+ * that would make pi warn "model not found" and fall back to a raw model id on a
+ * fresh install. Poll until the roster is populated, bounded by a deadline.
+ */
+async function discoverModelsWhenReady(service, logger, { attempts = 12, delayMs = 2000 } = {}) {
+  let best;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const found = await discoverModels(service, 20000);
+    if (found && found.length > 0) {
+      best = found;
+      // A cold catalog first returns just the anonymous set; wait one more beat
+      // for the channel roster to settle, then accept whatever we have.
+      if (found.length >= FALLBACK_MODELS.length || attempt >= 3) return found;
+    }
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  if (best) return best;
+  return undefined;
+}
+
 /** Build the pi provider config from a resolved service. */
 export async function buildProviderConfig(service, logger) {
-  const discovered = await discoverModels(service, 20000);
+  const discovered = await discoverModelsWhenReady(service, logger);
   const meta = readCatalogMeta(service.dataDir);
-  let models;
+
+  // Always include the bundled catalog as a floor, then layer the live roster on
+  // top. This keeps a fresh install usable even if discovery is slow or partial.
+  const byId = new Map();
+  for (const m of FALLBACK_MODELS) {
+    byId.set(m.id, toPiModel({ id: m.id, contextWindow: m.contextWindow }, meta));
+  }
   if (discovered) {
-    models = discovered.filter((e) => !NON_CHAT_MODEL_IDS.has(e.id)).map((e) => toPiModel(e, meta));
+    for (const entry of discovered) {
+      if (NON_CHAT_MODEL_IDS.has(entry.id)) continue;
+      const model = toPiModel(entry, meta);
+      byId.set(model.id, model);
+    }
   } else {
     logger?.warn?.(
-      "pi-our-free-model: live model discovery failed; falling back to the bundled catalog.",
+      "pi-our-free-model: live model discovery returned nothing; using the bundled catalog. " +
+        "The gateway may still be starting up.",
     );
-    models = FALLBACK_MODELS.map((m) => toPiModel({ id: m.id, contextWindow: m.contextWindow }, meta));
   }
+
   return {
     baseUrl: service.url + "/v1",
     apiKey: service.key,
     api: "openai-completions",
-    models,
+    models: [...byId.values()],
   };
 }
 
