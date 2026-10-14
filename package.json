@@ -42,7 +42,9 @@
     "pin:check": "node scripts/bump-pin.mjs --check",
     "pin:latest": "node scripts/bump-pin.mjs --latest",
     "pin:current": "node scripts/bump-pin.mjs --current",
-    "verify": "node scripts/verify-bundled.mjs",
-    "test": "node scripts/verify-bundled.mjs"
+    "verify": "npm run verify:bundled && npm run verify:command",
+    "test": "npm run verify",
+    "verify:bundled": "node scripts/verify-bundled.mjs",
+    "verify:command": "node scripts/verify-command.mjs ./extensions/index.js"
   }
 }

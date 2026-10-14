@@ -125,16 +125,20 @@ only file that records it, so moving forward is a single-artifact change:
 
 ```bash
 # from a clone of this repository
-node scripts/bump-pin.mjs --latest      # or: <specific 40-character sha>
-node scripts/verify-bundled.mjs        # bytes, closure, and a real gateway boot
+npm run pin:check                      # is the pin behind upstream?
+node scripts/bump-pin.mjs --latest     # or: <specific 40-character sha>
+npm test                               # bytes, closure, a real boot, the command surface
 git add bundled && git commit -m "pin: upstream <revision>"
-pi install npm:pi-our-free-model       # refresh the installed package
+pi update git:github.com/Twofruitsgrape/pi-our-free-model
 ```
 
-`verify-bundled.mjs` is not a lint pass. It starts the pinned gateway on an
-ephemeral port in a throwaway data directory, waits for `/health`, lists
+`npm test` is not a lint pass. `verify-bundled.mjs` starts the pinned gateway on
+an ephemeral port in a throwaway data directory, waits for `/health`, lists
 `/v1/models`, and asks the management console for a real bundle — then shuts it
-down. A pin that cannot boot does not get committed.
+down. `verify-command.mjs` then registers `/free-models` against a stub and calls
+its handler the way the TUI would, because `pi -p "/free-models status"` cannot
+test a command: `-p` sends the string to the model instead of running it. A pin
+that cannot boot does not get committed.
 
 Without touching the package at all, `/free-models update` fetches the newest
 upstream commit into the runtime cache and verifies it resolves as a closed
