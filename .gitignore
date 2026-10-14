@@ -1,6 +1,9 @@
+# The upstream clone bump-pin.mjs leaves behind for reviewing a revision.
+# Reviewed pins are committed as bundled/; this is not.
+.upstream/
+
+# Local scratch
 node_modules/
 *.log
 .DS_Store
 Thumbs.db
-# local scratch
-scratch/

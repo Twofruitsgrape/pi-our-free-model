@@ -2,67 +2,66 @@
 
 ## Upstream project
 
-`pi-our-free-model` is an independent port of:
+`pi-our-free-model` is a port of:
 
 - **Project:** Our Free Model (`dsh-our-free-model`)
 - **Author:** Ebony-Vinyl
 - **Repository:** https://github.com/Ebony-Vinyl/dsh-our-free-model
 - **License:** MIT (see `LICENSE` in this package, reproduced verbatim)
-- **Upstream revision used:** `befe36559e9f642ddac279e8b275558367f9f085` (2026-10-08)
 
-All credit for the original work — the provider/channel integrations, the model
-catalog, the request/stream conversion, the account and credential handling, and
-the standalone local gateway — belongs to the upstream author and its
-contributors. This port only adds the pi integration layer described below.
+All credit for the model channels, the catalog, the gateway, the account and
+credential handling and the standalone service belongs to the upstream author
+and its contributors. This package adds the pi integration layer described below
+and nothing else.
 
-## What this port changes
+## What this package is
 
 The upstream project is a plugin for **DeepSeek Harness (DSH)**. It declares a
-`dsh` manifest in `package.json`, depends on `@deepseek-ai/*` packages as peers,
-and is loaded by the DSH plugin host.
+`dsh` manifest, depends on `@deepseek-ai/*` packages as peers, and is loaded by
+the DSH plugin host. Pi packages use a different contract — a `pi` manifest plus
+extensions that call `pi.registerProvider()` — so the upstream package cannot be
+installed into pi directly.
 
-pi packages use a different contract: a `pi` manifest in `package.json` plus
-extensions that call `pi.registerProvider()`. The two plugin APIs are unrelated,
-so the upstream package cannot be installed into pi directly.
+Upstream ships a variant that runs **without** DSH, Cordis, a DSH profile or DSH
+credentials: `packages/standalone`, a local OpenAI-compatible gateway. This
+package runs that gateway and registers it as a pi provider.
 
-This package therefore:
+## How the gateway code reaches this package
 
-1. **Vendors the upstream `standalone` product** under `vendor/`. The upstream
-   project already ships this variant specifically to run *without* DSH, Cordis,
-   a DSH profile, or DSH credentials. It is used unmodified except for the one
-   additive patch noted below.
-2. **Adds `extensions/index.js`**, a pi extension that:
-   - starts (or adopts) the vendored gateway as a detached local process,
-   - discovers the available models from its `/v1/models` endpoint,
-   - enriches them with metadata from the gateway catalog (`contextWindow`,
-     `maxOutput`, `reasoning`, `vision`),
-   - registers them with pi via `pi.registerProvider("our-free-model", ...)`,
-   - sets the two compatibility flags this gateway needs
-     (`supportsDeveloperRole: false`, `maxTokensField: "max_tokens"`),
-   - adds a `/free-models` status command.
-3. **Patches `vendor/packages/standalone/service.mjs`** (additive only): the
-   service's return value now also exposes the raw `server` handle
-   (`server: listener.server`). The standalone CLI ignores it and behaves
-   exactly as upstream. This exists so an embedder can `unref()` the listener.
+`bundled/` holds one **pinned** snapshot of the upstream standalone closure:
 
-### Why the gateway runs out-of-process
+- `bundled/manifest.json` — the revision, its per-file size and sha256, and the
+  UTC time the snapshot was built.
+- `bundled/**` — the byte-for-byte tree for that revision.
 
-An early version embedded the gateway in-process. That does not work well inside
-pi: the gateway's channel runtime uses a worker thread and an HTTP listener, and
-either keeps pi's event loop alive, so one-shot runs (`pi -p "..."`) never exit.
-Running the gateway as a detached child process fixes this and also lets several
-pi processes share one gateway.
+Updating is `node scripts/bump-pin.mjs <revision>` (or `--latest`), which
+regenerates both artifacts from a fresh upstream checkout. The pin is reviewed
+before it is written: see "Reviewing a pin" in README.md.
 
-## Not included
+Nothing here relicenses or rewrites upstream. The files under `bundled/` are
+unmodified upstream sources and remain under the upstream MIT license with their
+original copyright notices. Third-party notices for the vendored channel pack
+are preserved at `bundled/vendor/channel-pack/NOTICE.md`.
 
-No upstream source is relicensed. Files under `vendor/` remain under the upstream
-MIT license and retain their original copyright notices. Third-party notices for
-the vendored channel pack are preserved at
-`vendor/vendor/channel-pack/NOTICE.md`.
+## What this package adds
+
+1. `src/upstream.js` — downloads a revision, filters it to the gateway's import
+   closure, verifies it, and stages it under `~/.our-free-model/runtimes/`.
+   Nothing in this file executes upstream code; files are read as bytes, hashed
+   and written.
+2. `src/service.js` — spawns or adopts the gateway as a detached local process,
+   including stale-lock recovery after an unclean shutdown.
+3. `src/provider.js` — reads the gateway's own catalog to build pi's Model
+   shape. Ids pass through unchanged; metadata comes from the gateway rather
+   than from local guesses.
+4. `src/extensions/index.js` — the pi extension: `pi.registerProvider(...)` and
+   a `/free-models` command.
 
 ## Disclaimer
 
 This port is not affiliated with, endorsed by, or supported by the upstream
-author. Free third-party model channels are operated by the upstream project and
-their availability, quotas, and terms are outside the control of this port. See
-the upstream repository for the current terms of use.
+author. Free third-party model channels are operated by the upstream project;
+their availability, quotas and terms are outside the control of this package.
+Some upstream channels state that prompts may be recorded to improve their
+service — treat the free lanes as a supplement to a paid provider, not a
+replacement, and do not send sensitive content through them.

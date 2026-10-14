@@ -1,0 +1,19 @@
+# Upstream normalises everything to LF (its own .gitattributes does the same),
+# and bundled/ is verified by sha256 against upstream bytes. Any line-ending
+# translation here would fail verification, so text handling is pinned.
+* text=auto eol=lf
+
+*.svg   text
+*.json  text
+*.js     text
+*.mjs    text
+*.cjs    text
+*.yml    text
+*.md     text
+*.css    text
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.wasm binary

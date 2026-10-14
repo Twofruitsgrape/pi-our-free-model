@@ -1,0 +1,85 @@
+# Upstream watch
+#
+# The pin is a reviewed decision, not an automatic one — this workflow never
+# moves it. It opens an issue when the upstream repository has commits this
+# package has not reviewed, so "am I behind" is a notification rather than
+# something you have to remember to check.
+#
+# Deliberately does NOT run `bump-pin.mjs`: adopting a revision means reading the
+# diff (see "Reviewing a pin" in README.md), and a workflow cannot do that.
+
+name: upstream-watch
+
+on:
+  schedule:
+    # Weekly, Monday 06:17 UTC. Off the hour to avoid the GitHub burst.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Read the current pin
+        id: pin
+        run: |
+          PIN=$(node -e "process.stdout.write(require('./bundled/manifest.json').revision ?? '')")
+          echo "pin=$PIN" >> "$GITHUB_OUTPUT"
+          echo "current pin: ${PIN:-<none>}"
+
+      - name: Compare with upstream
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PIN="${{ steps.pin.outputs.pin }}"
+          UPSTREAM="Ebony-Vinyl/dsh-our-free-model"
+          LATEST=$(gh api "repos/$UPSTREAM/commits/${{ github.ref_name == 'main' && 'main' || 'main' }}" \
+            --jq '.sha' 2>/dev/null || echo '')
+          echo "upstream head: ${LATEST:-<unknown>}"
+          if [ -z "$LATEST" ]; then
+            echo "could not read upstream head" >&2
+            exit 1
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: File a reminder when behind
+        if: steps.diff.outputs.latest != steps.pin.outputs.pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.diff.outputs.latest }}
+          PIN: ${{ steps.pin.outputs.pin }}
+        run: |
+          TITLE="upstream has unreviewed commits (${PIN:0:10} → ${LATEST:0:10})"
+          if gh issue list --state open --search "$TITLE" --json number --jq 'length' | grep -q '^1$'; then
+            echo "a reminder is already open"
+            exit 0
+          fi
+          gh issue create \
+            --title "$TITLE" \
+            --body "$(cat <<EOF
+          The bundled pin is \`${PIN}\`; upstream \`main\` is at \`${LATEST}\`.
+
+          Review and adopt with:
+
+          \`\`\`bash
+          node scripts/bump-pin.mjs ${LATEST}      # clones upstream, stages this revision
+          node scripts/verify-bundled.mjs          # bytes, closure, and a real gateway boot
+          git -C .upstream log -1 ${LATEST} --stat # read what is actually in it
+          \`\`\`
+
+          \`verify-bundled.mjs\` starts the pinned gateway on an ephemeral port,
+          waits for \`/health\`, lists \`/v1/models\` and asks the console for a
+          real bundle. A pin that cannot boot does not get committed.
+          EOF
+          )"

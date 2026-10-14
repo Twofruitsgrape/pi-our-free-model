@@ -1,7 +1,7 @@
 {
   "name": "pi-our-free-model",
-  "version": "1.0.2",
-  "description": "Free frontier models (DeepSeek V4.1 Flash, Kimi K3, GLM-5.3, ...) for the pi coding agent via a self-contained local OpenAI-compatible gateway. Ported from Ebony-Vinyl/dsh-our-free-model.",
+  "version": "2.0.0",
+  "description": "Free frontier models (DeepSeek V4.1 Flash, Kimi K3, GLM-5.3, ...) for the pi coding agent via a self-contained local OpenAI-compatible gateway. Pin-synced from Ebony-Vinyl/dsh-our-free-model.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -22,7 +22,7 @@
   },
   "files": [
     "extensions",
-    "vendor",
+    "bundled",
     "README.md",
     "LICENSE",
     "NOTICE.md"
@@ -37,5 +37,12 @@
   "homepage": "https://github.com/Twofruitsgrape/pi-our-free-model",
   "bugs": {
     "url": "https://github.com/Twofruitsgrape/pi-our-free-model/issues"
+  },
+  "scripts": {
+    "pin:check": "node scripts/bump-pin.mjs --check",
+    "pin:latest": "node scripts/bump-pin.mjs --latest",
+    "pin:current": "node scripts/bump-pin.mjs --current",
+    "verify": "node scripts/verify-bundled.mjs",
+    "test": "node scripts/verify-bundled.mjs"
   }
 }
